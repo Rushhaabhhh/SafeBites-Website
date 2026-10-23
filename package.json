@@ -6,9 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@zxing/browser": "^0.2.1",
     "lucide-react": "^0.468.0",
     "next": "latest",
     "react": "latest",
