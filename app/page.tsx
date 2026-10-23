@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { BrowserMultiFormatReader, type IScannerControls } from '@zxing/browser'
-import { AlertTriangle, Barcode, Camera, Check, ChevronDown, Clock3, Moon, Search, Settings2, ShieldCheck, Sun, X } from 'lucide-react'
+import { AlertTriangle, Barcode, Camera, Check, ChevronDown, Clock3, Moon, Plus, Search, Settings2, ShieldCheck, Sun, Trash2, X } from 'lucide-react'
 
 type Status = 'safe' | 'caution' | 'danger'
 type Product = {
@@ -17,9 +17,10 @@ type Product = {
   checkedAt: string
 }
 type Analysis = Product & { matches: string[]; status: Status; note: string }
+type Sensitivity = { name: string; synonyms: string[]; hint: string }
 
-const ALLERGENS = [
-  { name: 'Capsicum', synonyms: ['capsicum', 'chilli', 'chili', 'paprika', 'pepper'], hint: 'chilli, paprika' },
+const DEFAULT_SENSITIVITIES: Sensitivity[] = [
+  { name: 'Capsicum', synonyms: ['capsicum', 'chili', 'pepper'], hint: 'chili, pepper' },
   { name: 'Cumin', synonyms: ['cumin', 'jeera', 'cuminaldehyde'], hint: 'jeera, cuminaldehyde' },
   { name: 'Guava', synonyms: ['guava'], hint: 'guava leaf' },
   { name: 'Yeast', synonyms: ['yeast'], hint: "brewer's yeast" },
@@ -36,9 +37,9 @@ const statusCopy: Record<Status, { label: string; description: string }> = {
   danger: { label: 'Not safe for you', description: 'One or more selected sensitivities were found in the ingredients.' },
 }
 
-function analyze(product: Product, activeAllergens: string[]): Analysis {
+function analyze(product: Product, activeAllergens: Sensitivity[]): Analysis {
   const text = `${product.name} ${product.ingredients}`.toLowerCase()
-  const matches = ALLERGENS.filter((allergen) => activeAllergens.includes(allergen.name) && allergen.synonyms.some((word) => text.includes(word))).map((allergen) => allergen.name)
+  const matches = activeAllergens.filter((allergen) => allergen.synonyms.some((word) => text.includes(word.toLowerCase()))).map((allergen) => allergen.name)
   const hasAdvisory = /may contain|traces of|shared equipment|shared facility|manufactured in a facility/i.test(product.advisory)
   const status: Status = matches.length ? 'danger' : hasAdvisory ? 'caution' : 'safe'
   return { ...product, matches, status, note: matches.length ? `${matches.length} selected sensitivity${matches.length > 1 ? 'ies' : 'y'} found` : hasAdvisory ? 'Advisory statement found' : 'No selected sensitivities found' }
@@ -83,7 +84,7 @@ export default function Home() {
   const controlsRef = useRef<IScannerControls | null>(null)
   const [now, setNow] = useState(() => new Date())
   const [dark, setDark] = useState(false)
-  const [activeAllergens, setActiveAllergens] = useState<string[]>(ALLERGENS.map((item) => item.name))
+  const [activeAllergens, setActiveAllergens] = useState<Sensitivity[]>(DEFAULT_SENSITIVITIES)
   const [history, setHistory] = useState<Product[]>([])
   const [selected, setSelected] = useState<Analysis | null>(null)
   const [scanOpen, setScanOpen] = useState(false)
@@ -99,7 +100,10 @@ export default function Home() {
     const storedHistory = window.localStorage.getItem(HISTORY_KEY)
     const storedProfile = window.localStorage.getItem(PROFILE_KEY)
     if (storedHistory) setHistory(JSON.parse(storedHistory))
-    if (storedProfile) setActiveAllergens(JSON.parse(storedProfile))
+    if (storedProfile) {
+      const savedProfile = JSON.parse(storedProfile) as (Sensitivity | string)[]
+      setActiveAllergens(savedProfile.map((item) => typeof item === 'string' ? { name: item, synonyms: [item.toLowerCase()], hint: 'custom alias' } : item))
+    }
     const timer = window.setInterval(() => setNow(new Date()), 1000)
     return () => window.clearInterval(timer)
   }, [])
@@ -141,7 +145,35 @@ export default function Home() {
   }
 
   function chooseProduct(product: Product) { setSelected(analyze(product, activeAllergens)); setSearchResults([]); setQuery('') }
-  function toggleAllergen(name: string) { setActiveAllergens((current) => { const next = current.includes(name) ? current.filter((item) => item !== name) : [...current, name]; window.localStorage.setItem(PROFILE_KEY, JSON.stringify(next)); if (selected) setSelected(analyze(selected, next)); return next }) }
+  function deleteSensitivity(name: string) {
+    setActiveAllergens((current) => {
+      const next = current.filter((item) => item.name !== name)
+      window.localStorage.setItem(PROFILE_KEY, JSON.stringify(next))
+      if (selected) setSelected(analyze(selected, next))
+      return next
+    })
+  }
+
+  function addSensitivity(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const name = String(form.get('name') ?? '').trim()
+    const aliases = String(form.get('aliases') ?? '').split(',').map((item) => item.trim().toLowerCase()).filter(Boolean)
+    if (!name || !aliases.length || activeAllergens.some((item) => item.name.toLowerCase() === name.toLowerCase())) return
+    const next = [...activeAllergens, { name, synonyms: [name.toLowerCase(), ...aliases], hint: aliases.join(', ') }]
+    setActiveAllergens(next)
+    window.localStorage.setItem(PROFILE_KEY, JSON.stringify(next))
+    event.currentTarget.reset()
+  }
+
+  function deleteHistoryItem(barcode: string) {
+    setHistory((current) => {
+      const next = current.filter((item) => item.barcode !== barcode)
+      window.localStorage.setItem(HISTORY_KEY, JSON.stringify(next))
+      if (selected?.barcode === barcode) setSelected(null)
+      return next
+    })
+  }
 
   const dateLabel = now.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
   const timeLabel = now.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' })
@@ -152,11 +184,11 @@ export default function Home() {
     <section className="scan-hero page-width"><div className="scan-copy"><div className="tiny-label"><Barcode size={13} /> LIVE PRODUCT CHECK</div><h2>Scan the barcode.</h2><p>We’ll fetch the product, read its ingredients, and compare them with your sensitivities.</p></div><button className="primary-button" onClick={() => { setError(''); setScanOpen(true) }}><Camera size={19} /> Open camera</button></section>
     <section className="page-width search-row"><form onSubmit={submitSearch} className="search-form"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search a product by name or brand" aria-label="Search a product" /><button type="submit" className="search-submit">Search</button></form>{searchResults.length > 0 && <div className="search-results">{searchResults.map((product) => <button key={product.barcode} onClick={() => chooseProduct(product)}><strong>{product.name}</strong><span>{product.brand} · {product.barcode}</span></button>)}</div>}</section>
     <section className="page-width content-grid"><div className="main-column"><div className="section-heading" id="latest"><div><p className="eyebrow">Latest check</p><h2>{selected ? selected.name : 'No product checked yet'}</h2></div>{selected && <span className="source-label">{selected.source}</span>}</div>{selected ? <ResultCard analysis={selected} onOpenProfile={() => setProfileOpen(true)} /> : <div className="empty-card"><Barcode size={28} /><h3>Your next scan will appear here</h3><p>Use the camera above or search for a packaged product.</p></div>}
-      <div className="section-heading history-heading" id="history"><div><p className="eyebrow">Saved on this device</p><h2>Scan history</h2></div><span className="history-count">{history.length} {history.length === 1 ? 'scan' : 'scans'}</span></div>{history.length ? <div className="history-list">{history.map((product) => { const item = analyze(product, activeAllergens); return <button className={`history-item ${selected?.barcode === product.barcode ? 'selected' : ''}`} key={product.barcode} onClick={() => chooseProduct(product)}><div className="history-image">{product.image ? <img src={product.image} alt="" /> : <Barcode size={18} />}</div><span className="history-name"><strong>{product.name}</strong><small>{product.brand} · {product.barcode}</small></span><span className={`history-status ${item.status}`}><StatusMark status={item.status} />{statusCopy[item.status].label}</span><ChevronDown size={16} /></button> })}</div> : <p className="muted-copy">Completed scans will be saved here on this device.</p>}</div>
-      <aside className="side-column" id="sensitivities"><div className="section-heading"><div><p className="eyebrow">Your profile</p><h2>Sensitivities</h2></div><button className="icon-button" aria-label="Edit sensitivities" onClick={() => setProfileOpen(true)}><Settings2 size={17} /></button></div><div className="profile-card"><div className="profile-card-top"><div className="profile-icon"><ShieldCheck size={18} /></div><span>{activeAllergens.length} active</span></div><p>Ingredients are matched locally against this list after every scan.</p><div className="allergen-chips">{activeAllergens.map((item) => <span key={item}>{item}</span>)}</div><button className="outline-button full-width" onClick={() => setProfileOpen(true)}>Edit sensitivities <Settings2 size={15} /></button></div></aside>
+      <div className="section-heading history-heading" id="history"><div><p className="eyebrow">Saved on this device</p><h2>Scan history</h2></div><span className="history-count">{history.length} {history.length === 1 ? 'scan' : 'scans'}</span></div>{history.length ? <div className="history-list">{history.map((product) => { const item = analyze(product, activeAllergens); return <div className={`history-item ${selected?.barcode === product.barcode ? 'selected' : ''}`} key={product.barcode} onClick={() => chooseProduct(product)} role="button" tabIndex={0}><div className="history-image">{product.image ? <img src={product.image} alt="" /> : <Barcode size={18} />}</div><span className="history-name"><strong>{product.name}</strong><small>{product.brand} · {product.barcode}</small></span><span className={`history-status ${item.status}`}><StatusMark status={item.status} />{statusCopy[item.status].label}</span><ChevronDown size={16} /><button className="history-delete" onClick={(event) => { event.stopPropagation(); deleteHistoryItem(product.barcode) }} aria-label={`Delete ${product.name} from history`}><Trash2 size={15} /></button></div> })}</div> : <p className="muted-copy">Completed scans will be saved here on this device.</p>}</div>
+      <aside className="side-column" id="sensitivities"><div className="section-heading"><div><p className="eyebrow">Your profile</p><h2>Sensitivities</h2></div><button className="icon-button" aria-label="Edit sensitivities" onClick={() => setProfileOpen(true)}><Settings2 size={17} /></button></div><div className="profile-card"><div className="profile-card-top"><div className="profile-icon"><ShieldCheck size={18} /></div><span>{activeAllergens.length} active</span></div><p>Ingredients are matched locally against this list after every scan.</p><div className="allergen-chips">{activeAllergens.map((item) => <span key={item.name}>{item.name}</span>)}</div><button className="outline-button full-width" onClick={() => setProfileOpen(true)}>Edit sensitivities <Settings2 size={15} /></button></div></aside>
     </section>
     {scanOpen && <div className="modal-backdrop"><div className="scan-modal"><button className="modal-close" onClick={() => setScanOpen(false)} aria-label="Close scanner"><X size={18} /></button><div className="camera-frame"><video ref={videoRef} muted playsInline /><div className="scan-brackets" /><span>{cameraState}</span></div><h2>Scan a barcode</h2><p>Allow camera access and hold the barcode inside the frame. The result will be looked up and analyzed automatically.</p><form onSubmit={(event) => { event.preventDefault(); setScanOpen(false); void processBarcode(barcodeInput) }}><div className="barcode-input"><Barcode size={18} /><input value={barcodeInput} onChange={(event) => setBarcodeInput(event.target.value)} placeholder="Or enter a barcode" inputMode="numeric" /><button type="submit" aria-label="Process barcode"><Search size={17} /></button></div></form></div></div>}
-    {profileOpen && <div className="modal-backdrop" onClick={() => setProfileOpen(false)}><div className="profile-modal" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">Personal profile</p><h2>Sensitivities</h2></div><button className="modal-close static" onClick={() => setProfileOpen(false)} aria-label="Close profile"><X size={18} /></button></div><p className="modal-intro">Only selected items are used to evaluate scanned products.</p><div className="allergen-settings">{ALLERGENS.map((item) => <button className="allergen-setting" key={item.name} onClick={() => toggleAllergen(item.name)}><span className={`check-control ${activeAllergens.includes(item.name) ? 'checked' : ''}`}>{activeAllergens.includes(item.name) && <Check size={14} />}</span><span><strong>{item.name}</strong><small>{item.hint}</small></span></button>)}</div><button className="primary-button full-width" onClick={() => setProfileOpen(false)}>Done</button></div></div>}
+    {profileOpen && <div className="modal-backdrop" onClick={() => setProfileOpen(false)}><div className="profile-modal" onClick={(event) => event.stopPropagation()}><div className="modal-header"><div><p className="eyebrow">Personal profile</p><h2>Sensitivities</h2></div><button className="modal-close static" onClick={() => setProfileOpen(false)} aria-label="Close profile"><X size={18} /></button></div><p className="modal-intro">Add sensitivities and the ingredient names that should match them.</p><div className="allergen-settings">{activeAllergens.map((item) => <div className="allergen-setting" key={item.name}><span className="check-control checked"><Check size={14} /></span><span><strong>{item.name}</strong><small>{item.hint || 'No alternative names'}</small></span><button className="sensitivity-delete" onClick={() => deleteSensitivity(item.name)} aria-label={`Delete ${item.name}`}><Trash2 size={15} /></button></div>)}</div><form className="add-sensitivity-form" onSubmit={addSensitivity}><input name="name" placeholder="Sensitivity name" required /><input name="aliases" placeholder="Alternative names, comma separated" required /><button className="outline-button" type="submit"><Plus size={15} /> Add</button></form><button className="primary-button full-width" onClick={() => setProfileOpen(false)}>Done</button></div></div>}
     {loading && <div className="loading-bar" aria-label="Loading" />}{error && <div className="error-toast" role="alert"><AlertTriangle size={16} />{error}<button onClick={() => setError('')} aria-label="Dismiss error"><X size={15} /></button></div>}
   </main>
 }
